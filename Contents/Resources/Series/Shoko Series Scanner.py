@@ -8,7 +8,8 @@ Prefs = {
     'Port': 8111,
     'Username': 'Default',
     'Password': '',
-    'IncludeOther': True
+    'IncludeOther': True,
+    'Fuzzy': False
 }
 
 API_KEY = ''
@@ -91,6 +92,32 @@ def GetApiKey():
 
     return API_KEY
 
+def Score(folder, result):
+    score = 0
+    for x in range(0, min(len(folder), len(result))):
+        # plex can replace some characters like '!' on their optimized version folder
+        if (folder[x] == "_"):
+            continue
+        elif (folder[x] == result[x]):
+            score += 1
+        else:
+            score -= 1
+    score -= max(len(folder), len(result)) - min(len(folder), len(result))
+    return score
+
+def getResultKey(result):
+    return result.score
+
+class Result:
+    def __init__(self, name, score):
+        self.name = name
+        self.score = score
+    def __str__(self):
+        return "Name: " + self.name + ", Score: " + self.score
+
+# regex to get season and episode from file
+seasonRe = re.compile(r'S(\d*)', re.IGNORECASE)
+episodeRe = re.compile(r'E(\d*)', re.IGNORECASE)
 
 def Scan(path, files, mediaList, subdirs, language=None, root=None):
     try:
@@ -100,6 +127,24 @@ def Scan(path, files, mediaList, subdirs, language=None, root=None):
         Log.debug('subdirs: %s', subdirs)
         Log.debug('language: %s', language)
         Log.info('root: %s', root)
+        plexVersionShow = ""
+        # special case for optimized versions
+        if "Plex Versions" in path:
+            parent = os.path.basename(path)
+            # deal with files that have special characters turned to _
+            while len(parent) > 0 and parent[len(parent) - 1] == "_":
+                parent = parent[:-1]
+            Log.debug(parent)
+            prelimresults = HttpReq("api/serie/search?query=%s&level=%d&fuzzy=%d" % (urllib.quote(parent), 1, Prefs['Fuzzy']))
+            results = []
+            for result in prelimresults:
+                score = Score(parent, result['name'])
+                meta = Result(result['name'].encode("utf-8"), score)
+                results.append(meta)
+            results.sort(key=getResultKey, reverse=True)
+            Log.debug(results)
+            if len(results) > 0:
+                plexVersionShow = results[0].name
         
         # Scan for video files.
         VideoFiles.Scan(path, files, mediaList, subdirs, root)
@@ -107,7 +152,13 @@ def Scan(path, files, mediaList, subdirs, language=None, root=None):
         for idx, file in enumerate(files):
             Log.info('file: %s', file)
             # http://127.0.0.1:8111/api/ep/getbyfilename?apikey=d422dfd2-bdc3-4219-b3bb-08b85aa65579&filename=%5Bjoseole99%5D%20Clannad%20-%2001%20(1280x720%20Blu-ray%20H264)%20%5B8E128DF5%5D.mkv
-
+            # process optimized versions
+            if "Plex Versions" in path:
+                fileBase = os.path.basename(file)
+                vid = Media.Episode(plexVersionShow, seasonRe.search(fileBase).group(), episodeRe.search(fileBase).group())
+                vid.parts.append(file)
+                mediaList.append(vid)
+                continue
             episode_data = HttpReq("api/ep/getbyfilename?filename=%s" % (urllib.quote(os.path.basename(file))))
             if len(episode_data) == 0: continue
             if (try_get(episode_data, "code", 200) == 404): continue
